@@ -118,3 +118,9 @@ Xem chi tiết trong file `DEPLOY_ONLINE.md`.
 ## Cập nhật đọc Excel nhiều form
 
 Bản này tự dò dòng tiêu đề trong 50 dòng đầu và tự nhận các cột gần đúng như: Mã vật tư, Tên vật tư/Tên hàng/Description, Quy cách/Spec/Model, ĐVT/Unit/UOM, SL/Qty/Quantity, NCC/Supplier/Vendor, PO, Ghi chú/Note/Remark. Không có bước chọn lại cột thủ công. Nếu không nhận ra cột tên vật tư/mô tả thì file sẽ không import để tránh sai dữ liệu.
+
+
+## Cập nhật giao diện
+- Màn hình tạo dự án chỉ còn nhập Tên dự án.
+- Không hiển thị Mã dự án và Mô tả trên app.
+- Bỏ khối Quy trình sử dụng ở trang chính.

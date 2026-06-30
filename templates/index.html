@@ -1,50 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card hero">
-  <div>
-    <h1>Danh sách dự án</h1>
-    <p>Tạo dự án trên web, hệ thống sẽ tự tạo thư mục tương ứng trên Google Drive. Sau đó upload Excel để import vật tư và lưu file gốc vào đúng thư mục dự án.</p>
-  </div>
-  <form method="post" action="{{ url_for('sync_drive') }}" onsubmit="return confirm('Đồng bộ lại với Google Drive? Dự án nào có thư mục Drive đã bị xóa sẽ bị xóa khỏi app.');">
-    <button class="btn" type="submit">Đồng bộ Drive</button>
-  </form>
-</section>
-
 <section class="grid two">
   <div class="card">
     <h2>Tạo dự án mới</h2>
     <form method="post" action="{{ url_for('create_project') }}" class="form-stack">
       <label>Tên dự án <input name="name" required placeholder="Ví dụ: LCP Backup Power CCB"></label>
-      <label>Mã dự án <input name="code" placeholder="Ví dụ: CKQN-AES-2026-01"></label>
-      <label>Mô tả <textarea name="description" rows="3" placeholder="Ghi chú ngắn về gói công việc"></textarea></label>
       <button class="btn primary" type="submit">Tạo dự án</button>
     </form>
   </div>
 
   <div class="card">
-    <h2>Quy trình sử dụng</h2>
-    <ol class="steps">
-      <li>Tạo dự án, Google Drive sẽ tự tạo thư mục dự án.</li>
-      <li>Upload file Excel/PDF trong trang dự án, file gốc tự lưu vào Google Drive.</li>
-      <li>Excel sẽ tự import các dòng vật tư; PDF chỉ lưu hồ sơ gốc.</li>
-      <li>Mọi người tích trạng thái: Chưa đặt hàng / Đã đặt hàng.</li>
-      <li>Xuất CSV để tổng hợp báo cáo khi cần.</li>
-    </ol>
+    <h2>Đồng bộ Google Drive</h2>
+    <p class="muted">Dùng khi bạn đã xóa thư mục dự án trực tiếp trên Google Drive và muốn app cập nhật lại.</p>
+    <form method="post" action="{{ url_for('sync_drive') }}" onsubmit="return confirm('Đồng bộ lại với Google Drive? Dự án nào có thư mục Drive đã bị xóa sẽ bị xóa khỏi app.');">
+      <button class="btn" type="submit">Đồng bộ Drive</button>
+    </form>
   </div>
 </section>
 
 <section class="card">
-  <h2>Dự án hiện có</h2>
   <div class="project-list">
     {% for p in projects %}
       <div class="project-card">
         <a class="project-main" href="{{ url_for('project_detail', project_id=p.id) }}">
           <div class="project-title">{{ p.name }}</div>
-          <div class="muted">{{ p.code or 'Chưa có mã dự án' }}</div>
           <div class="metrics">
             <span>Tổng: <b>{{ p.total_items or 0 }}</b></span>
-            <span>Hoàn tất: <b>{{ p.done_items or 0 }}</b></span>
-            <span>Vướng: <b>{{ p.issue_items or 0 }}</b></span>
+            <span>Đã đặt: <b>{{ p.done_items or 0 }}</b></span>
+            <span>Chưa đặt: <b>{{ p.issue_items or 0 }}</b></span>
           </div>
         </a>
       </div>

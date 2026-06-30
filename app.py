@@ -350,19 +350,17 @@ def index():
 @app.route("/projects", methods=["POST"])
 def create_project():
     name = request.form.get("name", "").strip()
-    code = request.form.get("code", "").strip()
-    description = request.form.get("description", "").strip()
     if not name:
         flash("Vui lòng nhập tên dự án.", "error")
         return redirect(url_for("index"))
-    folder_name = f"{code} - {name}" if code else name
+
+    # Không hiển thị mã dự án trên giao diện nữa, nhưng vẫn tự tạo mã nội bộ
+    # để phù hợp với cấu trúc Supabase hiện có.
+    code = f"CKQN-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    description = ""
+    folder_name = name
     try:
         client = sb()
-        if code:
-            existed = client.select("projects", {"select": "id,name,code", "code": f"eq.{code}", "limit": "1"})
-            if existed:
-                flash("Mã dự án đã tồn tại, không tạo thêm thư mục Google Drive mới.", "error")
-                return redirect(url_for("index"))
         folder_id, folder_url = create_drive_folder(folder_name)
         client.insert(
             "projects",

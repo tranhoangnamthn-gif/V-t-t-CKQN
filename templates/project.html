@@ -2,10 +2,8 @@
 {% block content %}
 <section class="card hero project-header">
   <div>
-    <a href="{{ url_for('index') }}" class="back">← Về danh sách dự án</a>
+    <a href="{{ url_for('index') }}" class="back">← Về trang chính</a>
     <h1>{{ project.name }}</h1>
-    <p>{{ project.description or 'Chưa có mô tả dự án.' }}</p>
-    <p class="muted">Mã dự án: {{ project.code or '—' }}</p>
     {% if project.drive_folder_url %}<p><a class="btn" href="{{ project.drive_folder_url }}" target="_blank">Mở thư mục Google Drive</a></p>{% endif %}
   </div>
   <div class="actions action-stack">
