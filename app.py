@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover
     MediaIoBaseUpload = None
 
 BASE_DIR = Path(__file__).resolve().parent
-ALLOWED_EXTENSIONS = {"xlsx", "xlsm"}
+ALLOWED_EXTENSIONS = {"xlsx", "xlsm", "pdf"}
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("MATERIAL_APP_SECRET", "change-this-secret")
@@ -33,17 +33,31 @@ STATUS_OPTIONS = [
 ]
 
 HEADER_ALIASES = {
-    "item_code": ["ma vat tu", "ma hang", "code", "item code", "material code", "ma", "tag"],
-    "item_name": ["ten vat tu", "ten hang", "noi dung", "description", "item", "material", "ten thiet bi", "hang hoa"],
-    "specification": ["quy cach", "thong so", "spec", "specification", "model", "kich thuoc", "vat lieu"],
-    "unit": ["don vi", "dvt", "unit", "uom"],
-    "quantity": ["so luong", "sl", "qty", "quantity", "khoi luong"],
-    "supplier": ["nha cung cap", "supplier", "vendor", "hang sx", "manufacturer"],
-    "po_no": ["po", "po no", "so po", "purchase order", "don hang"],
-    "request_date": ["ngay yeu cau", "request date", "ngay dat", "order date", "ngay mua"],
-    "required_date": ["ngay can", "required date", "delivery date", "ngay giao", "eta", "deadline"],
-    "note": ["ghi chu", "note", "remark", "remarks"],
+    # App sẽ tự nhận nhiều tên cột khác nhau. Tên được chuẩn hóa bỏ dấu, không phân biệt hoa/thường.
+    "item_code": [
+        "stt ma", "ma vt", "ma vat tu", "ma hang", "ma hang hoa", "ma thiet bi", "ma san pham",
+        "code", "item code", "material code", "part no", "part number", "catalog no", "tag", "tag no", "ma"
+    ],
+    "item_name": [
+        "ten vat tu", "ten hang", "ten hang hoa", "ten thiet bi", "noi dung", "hang muc", "mo ta",
+        "description", "item description", "material name", "item name", "name", "material", "item", "goods", "equipment"
+    ],
+    "specification": [
+        "quy cach", "quy cach ky thuat", "thong so", "thong so ky thuat", "dac tinh", "model",
+        "spec", "specification", "technical specification", "size", "kich thuoc", "vat lieu", "material type", "type"
+    ],
+    "unit": ["don vi tinh", "don vi", "dvt", "unit", "uom", "u o m"],
+    "quantity": ["so luong", "sl", "khoi luong", "qty", "quantity", "vol", "volume", "amount"],
+    "supplier": [
+        "nha cung cap", "ncc", "don vi cung cap", "supplier", "vendor", "hang sx", "hang san xuat",
+        "manufacturer", "maker", "brand"
+    ],
+    "po_no": ["po", "po no", "po number", "so po", "ma po", "purchase order", "don hang", "so don hang", "order no"],
+    "request_date": ["ngay yeu cau", "ngay de nghi", "request date", "ngay dat", "order date", "ngay mua"],
+    "required_date": ["ngay can", "ngay can hang", "ngay giao", "ngay giao hang", "required date", "delivery date", "eta", "deadline"],
+    "note": ["ghi chu", "ghi chu noi bo", "note", "notes", "remark", "remarks", "comment", "comments"],
 }
+
 
 
 def normalize_text(value: Any) -> str:
@@ -69,8 +83,37 @@ def cell_to_text(value: Any) -> str:
     return str(value).strip()
 
 
+def file_extension(filename: str) -> str:
+    return filename.rsplit(".", 1)[1].lower() if "." in filename else ""
+
+
 def allowed_file(filename: str) -> bool:
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+    return file_extension(filename) in ALLOWED_EXTENSIONS
+
+
+def is_excel_file(filename: str) -> bool:
+    return file_extension(filename) in {"xlsx", "xlsm"}
+
+
+def is_pdf_file(filename: str) -> bool:
+    return file_extension(filename) == "pdf"
+
+
+def header_cell_matches(cell: str, alias: str) -> bool:
+    """So khớp tên cột theo kiểu gần đúng nhưng tránh nhầm quá rộng."""
+    if not cell or not alias:
+        return False
+    if cell == alias:
+        return True
+    # Cho phép chứa nhau với alias đủ dài, ví dụ "Tên vật tư/hàng hóa" chứa "ten vat tu".
+    if len(alias) >= 3 and (alias in cell or cell in alias):
+        return True
+    # So theo token để nhận các cột như "Material / Item Description".
+    cell_tokens = set(cell.split())
+    alias_tokens = set(alias.split())
+    if alias_tokens and alias_tokens.issubset(cell_tokens):
+        return True
+    return False
 
 
 def detect_header(row_values: List[Any]) -> Tuple[Dict[str, int], int]:
@@ -82,10 +125,11 @@ def detect_header(row_values: List[Any]) -> Tuple[Dict[str, int], int]:
         for idx, cell in enumerate(normalized):
             if not cell:
                 continue
-            if cell in aliases_norm or any(alias in cell for alias in aliases_norm):
+            if any(header_cell_matches(cell, alias) for alias in aliases_norm):
                 if field not in mapping:
                     mapping[field] = idx
-                    score += 1
+                    # Các cột quan trọng cho điểm cao hơn để chọn đúng dòng tiêu đề.
+                    score += 3 if field in {"item_name", "quantity", "unit"} else 1
                 break
     return mapping, score
 
@@ -93,51 +137,60 @@ def detect_header(row_values: List[Any]) -> Tuple[Dict[str, int], int]:
 def parse_excel(path: Path) -> List[Dict[str, Any]]:
     workbook = load_workbook(path, data_only=True, read_only=True)
     rows: List[Dict[str, Any]] = []
-    for sheet in workbook.worksheets:
-        all_rows = list(sheet.iter_rows(values_only=True))
-        if not all_rows:
-            continue
+    try:
+        for sheet in workbook.worksheets:
+            all_rows = list(sheet.iter_rows(values_only=True))
+            if not all_rows:
+                continue
 
-        best_index: Optional[int] = None
-        best_mapping: Dict[str, int] = {}
-        best_score = 0
-        for idx, row in enumerate(all_rows[:20]):
-            mapping, score = detect_header(list(row))
-            if score > best_score:
-                best_score = score
-                best_index = idx
-                best_mapping = mapping
-
-        if best_index is None or best_score < 2:
-            for idx, row in enumerate(all_rows):
-                if any(cell_to_text(v) for v in row):
+            best_index: Optional[int] = None
+            best_mapping: Dict[str, int] = {}
+            best_score = 0
+            # Quét 50 dòng đầu để tìm dòng tiêu đề, vì một số file có logo/ghi chú ở trên.
+            for idx, row in enumerate(all_rows[:50]):
+                mapping, score = detect_header(list(row))
+                # Chỉ nhận dòng tiêu đề nếu có ít nhất cột tên vật tư/mô tả.
+                if "item_name" not in mapping:
+                    continue
+                if score > best_score:
+                    best_score = score
                     best_index = idx
-                    break
-            if best_index is None:
-                continue
-            best_mapping = {
-                "item_code": 0,
-                "item_name": 1,
-                "specification": 2,
-                "unit": 3,
-                "quantity": 4,
-            }
+                    best_mapping = mapping
 
-        headers = [cell_to_text(v) or f"Column {i+1}" for i, v in enumerate(all_rows[best_index])]
-        for row_number, row in enumerate(all_rows[best_index + 1 :], start=best_index + 2):
-            if not any(cell_to_text(v) for v in row):
+            # Không đoán theo vị trí cứng nếu không nhận ra cột tên vật tư.
+            # Làm vậy để tránh import nhầm các file không đúng nội dung vật tư.
+            if best_index is None or "item_name" not in best_mapping:
                 continue
-            item: Dict[str, Any] = {"sheet_name": sheet.title, "excel_row": row_number, "extra_json": {}}
-            for field, col_index in best_mapping.items():
-                item[field] = cell_to_text(row[col_index]) if col_index < len(row) else ""
-            for col_index, header in enumerate(headers):
-                value = cell_to_text(row[col_index]) if col_index < len(row) else ""
-                if value:
-                    item["extra_json"][header] = value
-            if item.get("item_name") or item.get("item_code") or item.get("specification"):
+
+            headers = [cell_to_text(v) or f"Column {i+1}" for i, v in enumerate(all_rows[best_index])]
+            empty_streak = 0
+            for row_number, row in enumerate(all_rows[best_index + 1 :], start=best_index + 2):
+                if not any(cell_to_text(v) for v in row):
+                    empty_streak += 1
+                    # Nếu đã đọc qua nhiều dòng trống liên tiếp thì coi như hết bảng.
+                    if empty_streak >= 15:
+                        break
+                    continue
+                empty_streak = 0
+
+                item: Dict[str, Any] = {"sheet_name": sheet.title, "excel_row": row_number, "extra_json": {}}
+                for field, col_index in best_mapping.items():
+                    item[field] = cell_to_text(row[col_index]) if col_index < len(row) else ""
+
+                # Bỏ qua các dòng tổng cộng/ghi chú nếu không có tên vật tư thực sự.
+                name_norm = normalize_text(item.get("item_name", ""))
+                if not name_norm or name_norm in {"tong", "tong cong", "total", "subtotal"}:
+                    continue
+
+                for col_index, header in enumerate(headers):
+                    value = cell_to_text(row[col_index]) if col_index < len(row) else ""
+                    if value:
+                        item["extra_json"][header] = value
                 rows.append(item)
-    workbook.close()
+    finally:
+        workbook.close()
     return rows
+
 
 
 class SupabaseClient:
@@ -220,12 +273,21 @@ def create_drive_folder(name: str) -> Tuple[str, str]:
     return folder_id, folder.get("webViewLink", f"https://drive.google.com/drive/folders/{folder_id}")
 
 
+def drive_mimetype(filename: str) -> str:
+    ext = file_extension(filename)
+    if ext in {"xlsx", "xlsm"}:
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if ext == "pdf":
+        return "application/pdf"
+    return "application/octet-stream"
+
+
 def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> Tuple[str, str]:
     service = get_drive_service()
     metadata = {"name": filename, "parents": [folder_id]}
     media = MediaIoBaseUpload(
         io.BytesIO(file_bytes),
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mimetype=drive_mimetype(filename),
         resumable=False,
     )
     created = service.files().create(body=metadata, media_body=media, fields="id, webViewLink").execute()
@@ -368,12 +430,12 @@ def project_detail(project_id: int):
 
 @app.route("/project/<int:project_id>/upload", methods=["POST"])
 def upload_excel(project_id: int):
-    uploaded = request.files.get("excel_file")
+    uploaded = request.files.get("order_file") or request.files.get("excel_file")
     if not uploaded or not uploaded.filename:
-        flash("Vui lòng chọn file Excel.", "error")
+        flash("Vui lòng chọn file Excel hoặc PDF.", "error")
         return redirect(url_for("project_detail", project_id=project_id))
     if not allowed_file(uploaded.filename):
-        flash("Chỉ hỗ trợ file .xlsx hoặc .xlsm.", "error")
+        flash("Chỉ hỗ trợ file .xlsx, .xlsm hoặc .pdf.", "error")
         return redirect(url_for("project_detail", project_id=project_id))
 
     try:
@@ -388,59 +450,69 @@ def upload_excel(project_id: int):
             raise RuntimeError("Dự án này chưa có drive_folder_id. Hãy tạo lại dự án hoặc cập nhật folder ID.")
 
         file_bytes = uploaded.read()
-        original_name = secure_filename(uploaded.filename) or "upload.xlsx"
+        original_name = secure_filename(uploaded.filename) or "upload"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         drive_name = f"{timestamp}_{original_name}"
 
-        with tempfile.NamedTemporaryFile(suffix=Path(original_name).suffix, delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = Path(tmp.name)
-        try:
-            rows = parse_excel(tmp_path)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        rows: List[Dict[str, Any]] = []
+        if is_excel_file(original_name):
+            with tempfile.NamedTemporaryFile(suffix=Path(original_name).suffix, delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = Path(tmp.name)
+            try:
+                rows = parse_excel(tmp_path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
 
         drive_file_id, drive_file_url = upload_to_drive(file_bytes, drive_name, folder_id)
-        inserted_file = client.insert(
-            "excel_files",
-            {
-                "project_id": project_id,
-                "file_name": uploaded.filename,
-                "drive_file_id": drive_file_id,
-                "drive_file_url": drive_file_url,
-                "row_count": len(rows),
-            },
-        )[0]
+        file_payload = {
+            "project_id": project_id,
+            "file_name": uploaded.filename,
+            "drive_file_id": drive_file_id,
+            "drive_file_url": drive_file_url,
+            "row_count": len(rows),
+        }
+        if is_pdf_file(original_name):
+            file_payload["file_type"] = "pdf"
+        else:
+            file_payload["file_type"] = "excel"
+        inserted_file = client.insert("excel_files", file_payload)[0]
         file_id = inserted_file["id"]
-        payload = []
-        for item in rows:
-            payload.append(
-                {
-                    "project_id": project_id,
-                    "excel_file_id": file_id,
-                    "sheet_name": item.get("sheet_name"),
-                    "excel_row": item.get("excel_row"),
-                    "material_code": item.get("item_code", ""),
-                    "material_name": item.get("item_name", ""),
-                    "specification": item.get("specification", ""),
-                    "unit": item.get("unit", ""),
-                    "quantity": item.get("quantity", ""),
-                    "supplier": item.get("supplier", ""),
-                    "po_no": item.get("po_no", ""),
-                    "request_date": item.get("request_date", ""),
-                    "required_date": item.get("required_date", ""),
-                    "note": item.get("note", ""),
-                    "is_ordered": False,
-                    "extra_json": item.get("extra_json", {}),
-                    "updated_at": now_text(),
-                }
-            )
-        # Supabase REST giới hạn payload quá lớn, chia nhỏ mỗi 500 dòng.
-        for start in range(0, len(payload), 500):
-            client.insert("materials", payload[start : start + 500])
-        flash(f"Đã upload lên Google Drive và import {len(rows)} dòng vật tư.", "success")
+
+        if rows:
+            payload = []
+            for item in rows:
+                payload.append(
+                    {
+                        "project_id": project_id,
+                        "excel_file_id": file_id,
+                        "sheet_name": item.get("sheet_name"),
+                        "excel_row": item.get("excel_row"),
+                        "material_code": item.get("item_code", ""),
+                        "material_name": item.get("item_name", ""),
+                        "specification": item.get("specification", ""),
+                        "unit": item.get("unit", ""),
+                        "quantity": item.get("quantity", ""),
+                        "supplier": item.get("supplier", ""),
+                        "po_no": item.get("po_no", ""),
+                        "request_date": item.get("request_date", ""),
+                        "required_date": item.get("required_date", ""),
+                        "note": item.get("note", ""),
+                        "is_ordered": False,
+                        "extra_json": item.get("extra_json", {}),
+                        "updated_at": now_text(),
+                    }
+                )
+            # Supabase REST giới hạn payload quá lớn, chia nhỏ mỗi 500 dòng.
+            for start in range(0, len(payload), 500):
+                client.insert("materials", payload[start : start + 500])
+            flash(f"Đã upload file Excel lên Google Drive và import {len(rows)} dòng vật tư.", "success")
+        elif is_pdf_file(original_name):
+            flash("Đã upload file PDF lên Google Drive. PDF hiện chỉ lưu hồ sơ gốc, chưa tự import vật tư vào bảng.", "success")
+        else:
+            flash("Đã upload file lên Google Drive nhưng không có dòng vật tư nào được import.", "success")
     except Exception as exc:
-        flash(f"Không upload/import được Excel: {exc}", "error")
+        flash(f"Không upload/import được file: {exc}", "error")
     return redirect(url_for("project_detail", project_id=project_id))
 
 

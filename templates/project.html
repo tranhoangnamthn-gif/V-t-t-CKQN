@@ -18,12 +18,12 @@
 
 <section class="grid two">
   <div class="card">
-    <h2>Upload Excel đặt hàng</h2>
+    <h2>Upload file đặt hàng</h2>
     <form method="post" action="{{ url_for('upload_excel', project_id=project.id) }}" enctype="multipart/form-data" class="form-stack">
-      <input type="file" name="excel_file" accept=".xlsx,.xlsm" required>
+      <input type="file" name="order_file" accept=".xlsx,.xlsm,.pdf" required>
       <button class="btn primary" type="submit">Upload vào dự án này</button>
     </form>
-    <p class="hint">Nên có các cột: Mã vật tư, Tên vật tư, Quy cách, ĐVT, Số lượng, Nhà cung cấp, PO, Ngày cần, Ghi chú. Tên cột có thể khác một chút, hệ thống sẽ tự dò.</p>
+    <p class="hint">File Excel (.xlsx/.xlsm) sẽ tự import vật tư. File PDF sẽ được lưu vào Google Drive để làm hồ sơ gốc, hiện chưa tự nhận vật tư từ PDF. Excel nên có các cột: Mã vật tư, Tên vật tư, Quy cách, ĐVT, Số lượng, Nhà cung cấp, PO, Ngày cần, Ghi chú.</p>
   </div>
   <div class="card">
     <h2>Thống kê tình trạng</h2>
@@ -41,7 +41,7 @@
   <h2>File đã upload</h2>
   <div class="file-list">
     {% for f in files %}
-      <div><b>{{ f.original_name }}</b> · {{ f.row_count }} dòng · {{ f.uploaded_at }}{% if f.drive_file_url %} · <a href="{{ f.drive_file_url }}" target="_blank">Mở file Drive</a>{% endif %}</div>
+      <div><b>{{ f.original_name }}</b> · {{ f.file_type or 'excel' }} · {{ f.row_count }} dòng import · {{ f.uploaded_at }}{% if f.drive_file_url %} · <a href="{{ f.drive_file_url }}" target="_blank">Mở file Drive</a>{% endif %}</div>
     {% else %}
       <p class="muted">Chưa upload file nào.</p>
     {% endfor %}

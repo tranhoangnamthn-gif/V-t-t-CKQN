@@ -109,3 +109,12 @@ Bản này đã bổ sung cấu hình để đưa lên hosting/cloud và tạo l
 - `DEPLOY_ONLINE.md`: hướng dẫn đưa lên online để có link.
 
 Xem chi tiết trong file `DEPLOY_ONLINE.md`.
+
+
+## Cập nhật mới
+- Nút xóa dự án chỉ đặt trong trang chi tiết dự án.
+- Có thể upload file Excel hoặc PDF. Excel được import vật tư; PDF được lưu vào Google Drive làm hồ sơ gốc, chưa tự bóc tách vật tư.
+
+## Cập nhật đọc Excel nhiều form
+
+Bản này tự dò dòng tiêu đề trong 50 dòng đầu và tự nhận các cột gần đúng như: Mã vật tư, Tên vật tư/Tên hàng/Description, Quy cách/Spec/Model, ĐVT/Unit/UOM, SL/Qty/Quantity, NCC/Supplier/Vendor, PO, Ghi chú/Note/Remark. Không có bước chọn lại cột thủ công. Nếu không nhận ra cột tên vật tư/mô tả thì file sẽ không import để tránh sai dữ liệu.

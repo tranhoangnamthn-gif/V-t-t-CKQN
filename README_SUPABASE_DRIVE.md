@@ -20,3 +20,8 @@ Vào Supabase > SQL Editor, chạy file `SUPABASE_SCHEMA.sql`.
 ## Google Drive
 
 Tạo thư mục `VẬT TƯ CKQN`, share quyền Editor cho email service account.
+
+
+## Cập nhật mới
+- Nút xóa dự án chỉ đặt trong trang chi tiết dự án.
+- Có thể upload file Excel hoặc PDF. Excel được import vật tư; PDF được lưu vào Google Drive làm hồ sơ gốc, chưa tự bóc tách vật tư.
