@@ -5,6 +5,9 @@
     <h1>Danh sách dự án</h1>
     <p>Tạo dự án trên web, hệ thống sẽ tự tạo thư mục tương ứng trên Google Drive. Sau đó upload Excel để import vật tư và lưu file gốc vào đúng thư mục dự án.</p>
   </div>
+  <form method="post" action="{{ url_for('sync_drive') }}" onsubmit="return confirm('Đồng bộ lại với Google Drive? Dự án nào có thư mục Drive đã bị xóa sẽ bị xóa khỏi app.');">
+    <button class="btn" type="submit">Đồng bộ Drive</button>
+  </form>
 </section>
 
 <section class="grid two">
@@ -34,15 +37,20 @@
   <h2>Dự án hiện có</h2>
   <div class="project-list">
     {% for p in projects %}
-      <a class="project-card" href="{{ url_for('project_detail', project_id=p.id) }}">
-        <div class="project-title">{{ p.name }}</div>
-        <div class="muted">{{ p.code or 'Chưa có mã dự án' }}</div>
-        <div class="metrics">
-          <span>Tổng: <b>{{ p.total_items or 0 }}</b></span>
-          <span>Hoàn tất: <b>{{ p.done_items or 0 }}</b></span>
-          <span>Vướng: <b>{{ p.issue_items or 0 }}</b></span>
-        </div>
-      </a>
+      <div class="project-card">
+        <a class="project-main" href="{{ url_for('project_detail', project_id=p.id) }}">
+          <div class="project-title">{{ p.name }}</div>
+          <div class="muted">{{ p.code or 'Chưa có mã dự án' }}</div>
+          <div class="metrics">
+            <span>Tổng: <b>{{ p.total_items or 0 }}</b></span>
+            <span>Hoàn tất: <b>{{ p.done_items or 0 }}</b></span>
+            <span>Vướng: <b>{{ p.issue_items or 0 }}</b></span>
+          </div>
+        </a>
+        <form method="post" action="{{ url_for('delete_project', project_id=p.id) }}" onsubmit="return confirm('Xóa dự án này trên app và đưa thư mục Google Drive vào thùng rác?');">
+          <button class="btn danger small-btn" type="submit">Xóa dự án</button>
+        </form>
+      </div>
     {% else %}
       <p class="muted">Chưa có dự án nào.</p>
     {% endfor %}

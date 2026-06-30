@@ -8,8 +8,11 @@
     <p class="muted">Mã dự án: {{ project.code or '—' }}</p>
     {% if project.drive_folder_url %}<p><a class="btn" href="{{ project.drive_folder_url }}" target="_blank">Mở thư mục Google Drive</a></p>{% endif %}
   </div>
-  <div class="actions">
+  <div class="actions action-stack">
     <a class="btn" href="{{ url_for('export_csv', project_id=project.id) }}">Xuất CSV</a>
+    <form method="post" action="{{ url_for('delete_project', project_id=project.id) }}" onsubmit="return confirm('Xóa dự án này trên app và đưa thư mục Google Drive vào thùng rác?');">
+      <button class="btn danger" type="submit">Xóa dự án</button>
+    </form>
   </div>
 </section>
 

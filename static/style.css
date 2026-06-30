@@ -57,3 +57,8 @@ tr:hover td { background:#fafcff; }
 .check-option input { width:auto; accent-color:var(--primary); }
 .check-option:has(input:checked) { border-color:var(--primary); background:#ecfdf5; color:var(--primary-dark); }
 .check-option.ordered:has(input:checked) { background:#e8f0ff; color:#1d4ed8; border-color:#93c5fd; }
+.btn.danger { background:#fff; color:var(--danger); border-color:#fecaca; }
+.btn.danger:hover { background:#fef2f2; }
+.project-main { display:block; }
+.project-card form { margin-top:12px; }
+.action-stack { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }

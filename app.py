@@ -233,6 +233,27 @@ def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> Tuple[s
     return file_id, created.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
+
+def trash_drive_item(file_id: str) -> None:
+    """Đưa file/thư mục Google Drive vào thùng rác, không xóa vĩnh viễn."""
+    if not file_id:
+        return
+    service = get_drive_service()
+    service.files().update(fileId=file_id, body={"trashed": True}, fields="id, trashed").execute()
+
+
+def drive_item_exists(file_id: str) -> bool:
+    """Kiểm tra file/thư mục Drive còn tồn tại và chưa nằm trong thùng rác."""
+    if not file_id:
+        return False
+    service = get_drive_service()
+    try:
+        item = service.files().get(fileId=file_id, fields="id, trashed").execute()
+        return not bool(item.get("trashed"))
+    except Exception:
+        return False
+
+
 @app.context_processor
 def inject_globals():
     return {"STATUS_OPTIONS": STATUS_OPTIONS}
@@ -272,10 +293,16 @@ def create_project():
     if not name:
         flash("Vui lòng nhập tên dự án.", "error")
         return redirect(url_for("index"))
-    folder_name = code or name
+    folder_name = f"{code} - {name}" if code else name
     try:
+        client = sb()
+        if code:
+            existed = client.select("projects", {"select": "id,name,code", "code": f"eq.{code}", "limit": "1"})
+            if existed:
+                flash("Mã dự án đã tồn tại, không tạo thêm thư mục Google Drive mới.", "error")
+                return redirect(url_for("index"))
         folder_id, folder_url = create_drive_folder(folder_name)
-        sb().insert(
+        client.insert(
             "projects",
             {
                 "name": name,
@@ -481,10 +508,45 @@ def export_csv(project_id: int):
 @app.route("/project/<int:project_id>/delete", methods=["POST"])
 def delete_project(project_id: int):
     try:
-        sb().delete("projects", {"id": f"eq.{project_id}"})
-        flash("Đã xóa dự án và dữ liệu liên quan trong Supabase. Thư mục Google Drive không tự xóa để tránh mất file gốc.", "success")
+        client = sb()
+        projects = client.select("projects", {"select": "id,drive_folder_id", "id": f"eq.{project_id}", "limit": "1"})
+        if not projects:
+            flash("Không tìm thấy dự án cần xóa.", "error")
+            return redirect(url_for("index"))
+        folder_id = projects[0].get("drive_folder_id")
+        if folder_id:
+            trash_drive_item(folder_id)
+        # Xóa rõ các bảng con trước để không phụ thuộc cascade.
+        client.delete("materials", {"project_id": f"eq.{project_id}"})
+        client.delete("excel_files", {"project_id": f"eq.{project_id}"})
+        client.delete("projects", {"id": f"eq.{project_id}"})
+        flash("Đã xóa dự án trên app và đưa thư mục Google Drive vào thùng rác.", "success")
     except Exception as exc:
-        flash(str(exc), "error")
+        flash(f"Không xóa được dự án: {exc}", "error")
+    return redirect(url_for("index"))
+
+
+@app.route("/sync-drive", methods=["POST"])
+def sync_drive():
+    """Đồng bộ thủ công: nếu thư mục Drive đã bị xóa/đưa vào thùng rác thì xóa dự án trên app."""
+    try:
+        client = sb()
+        projects = client.select("projects", {"select": "id,name,drive_folder_id", "order": "created_at.desc"})
+        removed = 0
+        for project in projects:
+            project_id = project.get("id")
+            folder_id = project.get("drive_folder_id")
+            if not drive_item_exists(folder_id):
+                client.delete("materials", {"project_id": f"eq.{project_id}"})
+                client.delete("excel_files", {"project_id": f"eq.{project_id}"})
+                client.delete("projects", {"id": f"eq.{project_id}"})
+                removed += 1
+        if removed:
+            flash(f"Đã đồng bộ Google Drive và xóa {removed} dự án không còn thư mục Drive.", "success")
+        else:
+            flash("Đã đồng bộ Google Drive. Không có dự án nào cần xóa.", "success")
+    except Exception as exc:
+        flash(f"Không đồng bộ được Google Drive: {exc}", "error")
     return redirect(url_for("index"))
 
 
