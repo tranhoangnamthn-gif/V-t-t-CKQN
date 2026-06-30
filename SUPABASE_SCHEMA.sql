@@ -66,3 +66,16 @@ alter table materials add column if not exists responsible text;
 alter table materials add column if not exists actual_date text;
 alter table materials add column if not exists extra_json jsonb;
 alter table materials add column if not exists updated_at timestamp with time zone default now();
+
+-- Lưu token Google OAuth của tài khoản Drive đã cấp quyền cho app.
+create table if not exists app_settings (
+    key text primary key,
+    value jsonb,
+    updated_at timestamp with time zone default now()
+);
+
+-- App hiện chưa có đăng nhập riêng, nên tắt RLS để API publishable key thao tác được.
+alter table public.projects disable row level security;
+alter table public.materials disable row level security;
+alter table public.excel_files disable row level security;
+alter table public.app_settings disable row level security;

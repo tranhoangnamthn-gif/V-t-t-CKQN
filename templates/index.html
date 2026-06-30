@@ -1,12 +1,25 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="grid two">
+<section class="grid three">
   <div class="card">
     <h2>Tạo dự án mới</h2>
     <form method="post" action="{{ url_for('create_project') }}" class="form-stack">
       <label>Tên dự án <input name="name" required placeholder="Ví dụ: LCP Backup Power CCB"></label>
       <button class="btn primary" type="submit">Tạo dự án</button>
     </form>
+  </div>
+
+  <div class="card">
+    <h2>Kết nối Google Drive</h2>
+    {% if google_connected %}
+      <p class="success-text">Đã kết nối Google Drive.</p>
+      <form method="post" action="{{ url_for('google_disconnect') }}" onsubmit="return confirm('Ngắt kết nối Google Drive trên app?');">
+        <button class="btn" type="submit">Ngắt kết nối</button>
+      </form>
+    {% else %}
+      <p class="muted">Bấm kết nối để app được phép tạo thư mục và upload file vào Drive 15 GB của bạn.</p>
+      <a class="btn primary" href="{{ url_for('google_connect') }}">Kết nối Google Drive</a>
+    {% endif %}
   </div>
 
   <div class="card">

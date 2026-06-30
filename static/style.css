@@ -62,3 +62,6 @@ tr:hover td { background:#fafcff; }
 .project-main { display:block; }
 .project-card form { margin-top:12px; }
 .action-stack { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.success-text { color: #047857; font-weight: 700; }
+@media (max-width: 1000px) { .grid.three { grid-template-columns: 1fr; } }

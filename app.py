@@ -8,21 +8,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 import requests
-from flask import Flask, Response, flash, redirect, render_template, request, url_for
+from flask import Flask, Response, flash, redirect, render_template, request, url_for, session
 from openpyxl import load_workbook
 from werkzeug.utils import secure_filename
 
 try:
-    from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import Flow
+    from google.auth.transport.requests import Request as GoogleAuthRequest
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaIoBaseUpload
 except Exception:  # pragma: no cover
-    service_account = None
+    Credentials = None
+    Flow = None
+    GoogleAuthRequest = None
     build = None
     MediaIoBaseUpload = None
 
 BASE_DIR = Path(__file__).resolve().parent
 ALLOWED_EXTENSIONS = {"xlsx", "xlsm", "pdf"}
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("MATERIAL_APP_SECRET", "change-this-secret")
@@ -234,25 +239,87 @@ def sb() -> SupabaseClient:
     return SupabaseClient()
 
 
-def get_drive_service():
-    if service_account is None or build is None:
-        raise RuntimeError("Thiếu thư viện Google API. Kiểm tra requirements.txt và redeploy.")
-    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-    if not raw:
-        raise RuntimeError("Thiếu GOOGLE_SERVICE_ACCOUNT_JSON trong Environment Variables.")
-    try:
-        info = json.loads(raw)
-    except json.JSONDecodeError:
-        # Trường hợp private_key bị dán thành 1 dòng có ký tự \\n.
-        fixed = raw.replace('\\n', '\n')
-        info = json.loads(fixed)
-    if "private_key" in info:
-        info["private_key"] = info["private_key"].replace('\\n', '\n')
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+def google_client_config() -> Dict[str, Any]:
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise RuntimeError("Thiếu GOOGLE_OAUTH_CLIENT_ID hoặc GOOGLE_OAUTH_CLIENT_SECRET trong Environment Variables.")
+    return {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [oauth_redirect_uri()],
+        }
+    }
 
+
+def oauth_redirect_uri() -> str:
+    configured = os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+    if configured:
+        return configured
+    # Fallback này dùng được khi chạy local. Trên Render nên khai báo biến môi trường rõ ràng.
+    return url_for("google_callback", _external=True)
+
+
+def get_setting(key: str) -> Optional[Any]:
+    try:
+        rows = sb().select("app_settings", {"select": "value", "key": f"eq.{key}", "limit": "1"})
+        if rows:
+            return rows[0].get("value")
+    except Exception:
+        return None
+    return None
+
+
+def set_setting(key: str, value: Any) -> None:
+    client = sb()
+    # Dùng delete + insert để tránh cần cấu hình upsert header riêng.
+    try:
+        client.delete("app_settings", {"key": f"eq.{key}"})
+    except Exception:
+        pass
+    client.insert("app_settings", {"key": key, "value": value, "updated_at": now_text()})
+
+
+def google_token_info() -> Optional[Dict[str, Any]]:
+    value = get_setting("google_token_json")
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
+    return None
+
+
+def save_google_credentials(creds) -> None:
+    token = {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": creds.scopes,
+    }
+    set_setting("google_token_json", token)
+
+
+def get_drive_service():
+    if Credentials is None or build is None:
+        raise RuntimeError("Thiếu thư viện Google OAuth/API. Kiểm tra requirements.txt và redeploy.")
+    info = google_token_info()
+    if not info:
+        raise RuntimeError("Chưa kết nối Google Drive. Hãy bấm 'Kết nối Google Drive' ở trang chính trước.")
+    creds = Credentials.from_authorized_user_info(info, GOOGLE_SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleAuthRequest())
+        save_google_credentials(creds)
+    if not creds.valid:
+        raise RuntimeError("Phiên kết nối Google Drive hết hạn. Hãy kết nối Google Drive lại.")
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 def drive_root_id() -> str:
     root_id = os.environ.get("GOOGLE_DRIVE_ROOT_FOLDER_ID", "").strip()
@@ -316,9 +383,53 @@ def drive_item_exists(file_id: str) -> bool:
         return False
 
 
+
+@app.route("/google/connect")
+def google_connect():
+    try:
+        flow = Flow.from_client_config(
+            google_client_config(), scopes=GOOGLE_SCOPES, redirect_uri=oauth_redirect_uri()
+        )
+        authorization_url, state = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+        )
+        session["google_oauth_state"] = state
+        return redirect(authorization_url)
+    except Exception as exc:
+        flash(f"Không khởi tạo được kết nối Google Drive: {exc}", "error")
+        return redirect(url_for("index"))
+
+
+@app.route("/google/callback")
+def google_callback():
+    try:
+        state = session.get("google_oauth_state")
+        flow = Flow.from_client_config(
+            google_client_config(), scopes=GOOGLE_SCOPES, state=state, redirect_uri=oauth_redirect_uri()
+        )
+        flow.fetch_token(authorization_response=request.url)
+        save_google_credentials(flow.credentials)
+        flash("Đã kết nối Google Drive. File upload sẽ tính vào dung lượng Drive của tài khoản vừa cấp quyền.", "success")
+    except Exception as exc:
+        flash(f"Kết nối Google Drive lỗi: {exc}", "error")
+    return redirect(url_for("index"))
+
+
+@app.route("/google/disconnect", methods=["POST"])
+def google_disconnect():
+    try:
+        set_setting("google_token_json", {})
+        flash("Đã ngắt kết nối Google Drive trên app.", "success")
+    except Exception as exc:
+        flash(f"Không ngắt kết nối được: {exc}", "error")
+    return redirect(url_for("index"))
+
+
 @app.context_processor
 def inject_globals():
-    return {"STATUS_OPTIONS": STATUS_OPTIONS}
+    return {"STATUS_OPTIONS": STATUS_OPTIONS, "google_connected": bool(google_token_info())}
 
 
 @app.route("/")

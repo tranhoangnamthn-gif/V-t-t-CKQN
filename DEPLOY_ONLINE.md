@@ -1,92 +1,39 @@
-# Đưa web quản lý vật tư lên online để có link truy cập
+# Deploy online trên Render
 
-Mục tiêu: sau khi deploy xong, bạn sẽ có link dạng:
+## 1. Chạy SQL trong Supabase
 
-```text
-https://material-control-web.onrender.com
-```
+Mở `SUPABASE_SCHEMA.sql`, copy toàn bộ, dán vào Supabase > SQL Editor > Run.
 
-Hoặc có thể gắn tên miền riêng dạng:
+## 2. Upload code lên GitHub
 
-```text
-https://vattu.tencongty.com
-```
+Upload toàn bộ nội dung thư mục này lên repository GitHub.
 
-## Cách khuyên dùng: Render + GitHub
-
-Bản này đã được cấu hình sẵn để deploy Flask bằng Gunicorn, có `Procfile`, `render.yaml`, `Dockerfile` và biến `MATERIAL_DATA_DIR` để lưu dữ liệu.
-
-### Bước 1. Tạo GitHub repository
-
-1. Đăng nhập GitHub.
-2. Tạo repository mới, ví dụ: `material-control-web`.
-3. Upload toàn bộ thư mục này lên repository đó.
-
-### Bước 2. Deploy trên Render
-
-1. Đăng nhập Render.
-2. Chọn **New +** → **Blueprint** nếu dùng file `render.yaml`, hoặc **Web Service** nếu tạo thủ công.
-3. Kết nối GitHub repository `material-control-web`.
-4. Nếu tạo thủ công, nhập:
+## 3. Cấu hình Environment Variables trên Render
 
 ```text
-Build Command: pip install -r requirements.txt
-Start Command: gunicorn wsgi:app --bind 0.0.0.0:$PORT
+SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_KEY=sb_publishable_xxxxx
+GOOGLE_DRIVE_ROOT_FOLDER_ID=ID_THU_MUC_GOC_TREN_DRIVE
+GOOGLE_OAUTH_CLIENT_ID=xxxxx.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=xxxxx
+GOOGLE_OAUTH_REDIRECT_URI=https://vat-tu-ckqn.onrender.com/google/callback
+MATERIAL_APP_SECRET=chuoi_bat_ky_kho_doan
 ```
 
-5. Thêm Environment Variables:
+## 4. Deploy
 
-```text
-MATERIAL_APP_SECRET = một_chuỗi_bí_mật_bất_kỳ
-MATERIAL_DATA_DIR = /var/data
-PYTHON_VERSION = 3.12.4
-```
-
-6. Thêm Persistent Disk:
-
-```text
-Mount Path: /var/data
-Size: 1 GB hoặc lớn hơn
-```
-
-Nếu không thêm Persistent Disk, dữ liệu SQLite và file Excel upload có thể mất khi server redeploy/restart.
-
-### Bước 3. Lấy link web
-
-Sau khi deploy thành công, Render sẽ cấp link dạng:
-
-```text
-https://ten-service.onrender.com
-```
-
-Gửi link này cho mọi người để truy cập bằng Chrome/Edge trên máy tính hoặc điện thoại.
-
-## Chạy local để kiểm tra trước khi deploy
+Build Command:
 
 ```bash
 pip install -r requirements.txt
-python app.py
 ```
 
-Mở:
-
-```text
-http://127.0.0.1:5000
-```
-
-## Chạy bằng Docker
+Start Command:
 
 ```bash
-docker build -t material-control-web .
-docker run -p 5000:5000 -v material_data:/data material-control-web
+gunicorn wsgi:app
 ```
 
-Mở:
+## 5. Kết nối Google Drive
 
-```text
-http://127.0.0.1:5000
-```
-
-## Ghi chú bảo mật
-
-Bản hiện tại ưu tiên đơn giản, mọi người có link đều có thể vào xem/sửa. Nếu đưa lên internet công khai, nên bổ sung đăng nhập và phân quyền trước khi dùng chính thức.
+Sau khi web Live, mở web và bấm **Kết nối Google Drive**.
