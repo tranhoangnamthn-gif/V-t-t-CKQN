@@ -24,14 +24,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 STATUS_OPTIONS = [
     "Chưa đặt hàng",
-    "Đã gửi yêu cầu báo giá",
     "Đã đặt hàng",
-    "Đang sản xuất/chuẩn bị",
-    "Đang vận chuyển",
-    "Đã về kho",
-    "Đã bàn giao công trình",
-    "Thiếu / Chờ bổ sung",
-    "Hủy / Không mua",
 ]
 
 HEADER_ALIASES = {
@@ -112,6 +105,14 @@ def init_db() -> None:
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE SET NULL
             );
+
+            -- Chuẩn hóa dữ liệu cũ nếu trước đó từng dùng nhiều tình trạng.
+            UPDATE materials
+            SET status = CASE
+                WHEN status IN ('Đã đặt hàng', 'Đang sản xuất/chuẩn bị', 'Đang vận chuyển', 'Đã về kho', 'Đã bàn giao công trình') THEN 'Đã đặt hàng'
+                ELSE 'Chưa đặt hàng'
+            END
+            WHERE status NOT IN ('Chưa đặt hàng', 'Đã đặt hàng');
             """
         )
 
@@ -214,8 +215,8 @@ def index():
             """
             SELECT p.*,
                    COUNT(m.id) AS total_items,
-                   SUM(CASE WHEN m.status = 'Đã về kho' OR m.status = 'Đã bàn giao công trình' THEN 1 ELSE 0 END) AS done_items,
-                   SUM(CASE WHEN m.status = 'Thiếu / Chờ bổ sung' THEN 1 ELSE 0 END) AS issue_items
+                   SUM(CASE WHEN m.status = 'Đã đặt hàng' THEN 1 ELSE 0 END) AS done_items,
+                   SUM(CASE WHEN m.status = 'Chưa đặt hàng' THEN 1 ELSE 0 END) AS issue_items
             FROM projects p
             LEFT JOIN materials m ON m.project_id = p.id
             GROUP BY p.id

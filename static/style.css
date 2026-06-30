@@ -51,3 +51,9 @@ tr:hover td { background:#fafcff; }
 .update-cell { min-width:260px; }
 .mini-form { display:grid; grid-template-columns:1fr; gap:7px; }
 @media (max-width: 900px) { .grid.two, .hero, .table-toolbar { grid-template-columns:1fr; display:block; } .filters { margin-top:12px; } .topbar { padding:0 16px; } }
+
+.order-status-toggle { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.check-option { border:1px solid var(--line); border-radius:10px; padding:9px 10px; display:flex; flex-direction:row; align-items:center; justify-content:center; gap:7px; font-weight:700; background:#fff; cursor:pointer; }
+.check-option input { width:auto; accent-color:var(--primary); }
+.check-option:has(input:checked) { border-color:var(--primary); background:#ecfdf5; color:var(--primary-dark); }
+.check-option.ordered:has(input:checked) { background:#e8f0ff; color:#1d4ed8; border-color:#93c5fd; }

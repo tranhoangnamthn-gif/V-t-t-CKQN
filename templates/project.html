@@ -88,11 +88,16 @@
           <td>{{ m.required_date }}</td>
           <td class="update-cell">
             <form method="post" action="{{ url_for('update_material', material_id=m.id) }}" class="mini-form">
-              <select name="status">
-                {% for option in STATUS_OPTIONS %}
-                  <option value="{{ option }}" {% if m.status == option %}selected{% endif %}>{{ option }}</option>
-                {% endfor %}
-              </select>
+              <div class="order-status-toggle">
+                <label class="check-option">
+                  <input type="radio" name="status" value="Chưa đặt hàng" {% if m.status != 'Đã đặt hàng' %}checked{% endif %}>
+                  <span>Chưa đặt hàng</span>
+                </label>
+                <label class="check-option ordered">
+                  <input type="radio" name="status" value="Đã đặt hàng" {% if m.status == 'Đã đặt hàng' %}checked{% endif %}>
+                  <span>Đã đặt hàng</span>
+                </label>
+              </div>
               <input name="location" value="{{ m.location or '' }}" placeholder="Vị trí/kho">
               <input name="responsible" value="{{ m.responsible or '' }}" placeholder="Người phụ trách">
               <input name="actual_date" value="{{ m.actual_date or '' }}" placeholder="Ngày thực tế">
