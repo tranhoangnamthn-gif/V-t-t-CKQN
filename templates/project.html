@@ -6,6 +6,7 @@
     <h1>{{ project.name }}</h1>
     <p>{{ project.description or 'Chưa có mô tả dự án.' }}</p>
     <p class="muted">Mã dự án: {{ project.code or '—' }}</p>
+    {% if project.drive_folder_url %}<p><a class="btn" href="{{ project.drive_folder_url }}" target="_blank">Mở thư mục Google Drive</a></p>{% endif %}
   </div>
   <div class="actions">
     <a class="btn" href="{{ url_for('export_csv', project_id=project.id) }}">Xuất CSV</a>
@@ -37,7 +38,7 @@
   <h2>File đã upload</h2>
   <div class="file-list">
     {% for f in files %}
-      <div><b>{{ f.original_name }}</b> · {{ f.row_count }} dòng · {{ f.uploaded_at }}</div>
+      <div><b>{{ f.original_name }}</b> · {{ f.row_count }} dòng · {{ f.uploaded_at }}{% if f.drive_file_url %} · <a href="{{ f.drive_file_url }}" target="_blank">Mở file Drive</a>{% endif %}</div>
     {% else %}
       <p class="muted">Chưa upload file nào.</p>
     {% endfor %}

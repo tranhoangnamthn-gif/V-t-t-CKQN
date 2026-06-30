@@ -2,25 +2,30 @@ import csv
 import io
 import json
 import os
-import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, List, Tuple, Optional
 
-from flask import Flask, Response, flash, redirect, render_template, request, send_file, url_for
-from werkzeug.utils import secure_filename
+import requests
+from flask import Flask, Response, flash, redirect, render_template, request, url_for
 from openpyxl import load_workbook
+from werkzeug.utils import secure_filename
+
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseUpload
+except Exception:  # pragma: no cover
+    service_account = None
+    build = None
+    MediaIoBaseUpload = None
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("MATERIAL_DATA_DIR", BASE_DIR / "data"))
-UPLOAD_DIR = DATA_DIR / "uploads"
-DB_PATH = DATA_DIR / "materials.db"
 ALLOWED_EXTENSIONS = {"xlsx", "xlsm"}
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("MATERIAL_APP_SECRET", "change-this-secret")
-DATA_DIR.mkdir(exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 STATUS_OPTIONS = [
     "Chưa đặt hàng",
@@ -52,69 +57,16 @@ def normalize_text(value: Any) -> str:
     return " ".join(text.translate(replacements).replace("_", " ").replace("/", " ").split())
 
 
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def now_text() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
-def init_db() -> None:
-    with db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                code TEXT,
-                description TEXT,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL,
-                original_name TEXT NOT NULL,
-                stored_name TEXT NOT NULL,
-                uploaded_at TEXT NOT NULL,
-                row_count INTEGER DEFAULT 0,
-                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS materials (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL,
-                file_id INTEGER,
-                sheet_name TEXT,
-                excel_row INTEGER,
-                item_code TEXT,
-                item_name TEXT,
-                specification TEXT,
-                unit TEXT,
-                quantity TEXT,
-                supplier TEXT,
-                po_no TEXT,
-                request_date TEXT,
-                required_date TEXT,
-                status TEXT DEFAULT 'Chưa đặt hàng',
-                location TEXT,
-                responsible TEXT,
-                actual_date TEXT,
-                note TEXT,
-                extra_json TEXT,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
-                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE SET NULL
-            );
-
-            -- Chuẩn hóa dữ liệu cũ nếu trước đó từng dùng nhiều tình trạng.
-            UPDATE materials
-            SET status = CASE
-                WHEN status IN ('Đã đặt hàng', 'Đang sản xuất/chuẩn bị', 'Đang vận chuyển', 'Đã về kho', 'Đã bàn giao công trình') THEN 'Đã đặt hàng'
-                ELSE 'Chưa đặt hàng'
-            END
-            WHERE status NOT IN ('Chưa đặt hàng', 'Đã đặt hàng');
-            """
-        )
+def cell_to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+    return str(value).strip()
 
 
 def allowed_file(filename: str) -> bool:
@@ -138,14 +90,6 @@ def detect_header(row_values: List[Any]) -> Tuple[Dict[str, int], int]:
     return mapping, score
 
 
-def cell_to_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        return value.strftime("%d/%m/%Y")
-    return str(value).strip()
-
-
 def parse_excel(path: Path) -> List[Dict[str, Any]]:
     workbook = load_workbook(path, data_only=True, read_only=True)
     rows: List[Dict[str, Any]] = []
@@ -154,7 +98,7 @@ def parse_excel(path: Path) -> List[Dict[str, Any]]:
         if not all_rows:
             continue
 
-        best_index = None
+        best_index: Optional[int] = None
         best_mapping: Dict[str, int] = {}
         best_score = 0
         for idx, row in enumerate(all_rows[:20]):
@@ -165,7 +109,6 @@ def parse_excel(path: Path) -> List[Dict[str, Any]]:
                 best_mapping = mapping
 
         if best_index is None or best_score < 2:
-            # Fallback: assume first non-empty row is header and import basic columns.
             for idx, row in enumerate(all_rows):
                 if any(cell_to_text(v) for v in row):
                     best_index = idx
@@ -184,23 +127,110 @@ def parse_excel(path: Path) -> List[Dict[str, Any]]:
         for row_number, row in enumerate(all_rows[best_index + 1 :], start=best_index + 2):
             if not any(cell_to_text(v) for v in row):
                 continue
-            item: Dict[str, Any] = {
-                "sheet_name": sheet.title,
-                "excel_row": row_number,
-                "extra_json": {},
-            }
+            item: Dict[str, Any] = {"sheet_name": sheet.title, "excel_row": row_number, "extra_json": {}}
             for field, col_index in best_mapping.items():
                 item[field] = cell_to_text(row[col_index]) if col_index < len(row) else ""
-
             for col_index, header in enumerate(headers):
                 value = cell_to_text(row[col_index]) if col_index < len(row) else ""
                 if value:
                     item["extra_json"][header] = value
-
             if item.get("item_name") or item.get("item_code") or item.get("specification"):
                 rows.append(item)
     workbook.close()
     return rows
+
+
+class SupabaseClient:
+    def __init__(self) -> None:
+        self.url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+        self.key = os.environ.get("SUPABASE_KEY", "") or os.environ.get("SUPABASE_ANON_KEY", "")
+        if not self.url or not self.key:
+            raise RuntimeError("Thiếu SUPABASE_URL hoặc SUPABASE_KEY trong Environment Variables.")
+        self.headers = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
+
+    def table_url(self, table: str) -> str:
+        return f"{self.url}/rest/v1/{table}"
+
+    def _request(self, method: str, table: str, **kwargs):
+        response = requests.request(method, self.table_url(table), headers=self.headers, timeout=30, **kwargs)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Supabase lỗi {response.status_code}: {response.text[:500]}")
+        if response.text:
+            return response.json()
+        return []
+
+    def select(self, table: str, params: Dict[str, str]) -> List[Dict[str, Any]]:
+        return self._request("GET", table, params=params)
+
+    def insert(self, table: str, payload: Any) -> List[Dict[str, Any]]:
+        return self._request("POST", table, data=json.dumps(payload, ensure_ascii=False))
+
+    def update(self, table: str, payload: Dict[str, Any], params: Dict[str, str]) -> List[Dict[str, Any]]:
+        return self._request("PATCH", table, params=params, data=json.dumps(payload, ensure_ascii=False))
+
+    def delete(self, table: str, params: Dict[str, str]) -> None:
+        self._request("DELETE", table, params=params)
+
+
+def sb() -> SupabaseClient:
+    return SupabaseClient()
+
+
+def get_drive_service():
+    if service_account is None or build is None:
+        raise RuntimeError("Thiếu thư viện Google API. Kiểm tra requirements.txt và redeploy.")
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not raw:
+        raise RuntimeError("Thiếu GOOGLE_SERVICE_ACCOUNT_JSON trong Environment Variables.")
+    try:
+        info = json.loads(raw)
+    except json.JSONDecodeError:
+        # Trường hợp private_key bị dán thành 1 dòng có ký tự \\n.
+        fixed = raw.replace('\\n', '\n')
+        info = json.loads(fixed)
+    if "private_key" in info:
+        info["private_key"] = info["private_key"].replace('\\n', '\n')
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def drive_root_id() -> str:
+    root_id = os.environ.get("GOOGLE_DRIVE_ROOT_FOLDER_ID", "").strip()
+    if not root_id:
+        raise RuntimeError("Thiếu GOOGLE_DRIVE_ROOT_FOLDER_ID trong Environment Variables.")
+    return root_id
+
+
+def create_drive_folder(name: str) -> Tuple[str, str]:
+    service = get_drive_service()
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [drive_root_id()],
+    }
+    folder = service.files().create(body=metadata, fields="id, webViewLink").execute()
+    folder_id = folder["id"]
+    return folder_id, folder.get("webViewLink", f"https://drive.google.com/drive/folders/{folder_id}")
+
+
+def upload_to_drive(file_bytes: bytes, filename: str, folder_id: str) -> Tuple[str, str]:
+    service = get_drive_service()
+    metadata = {"name": filename, "parents": [folder_id]}
+    media = MediaIoBaseUpload(
+        io.BytesIO(file_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        resumable=False,
+    )
+    created = service.files().create(body=metadata, media_body=media, fields="id, webViewLink").execute()
+    file_id = created["id"]
+    return file_id, created.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
 @app.context_processor
@@ -210,19 +240,27 @@ def inject_globals():
 
 @app.route("/")
 def index():
-    with db() as conn:
-        projects = conn.execute(
-            """
-            SELECT p.*,
-                   COUNT(m.id) AS total_items,
-                   SUM(CASE WHEN m.status = 'Đã đặt hàng' THEN 1 ELSE 0 END) AS done_items,
-                   SUM(CASE WHEN m.status = 'Chưa đặt hàng' THEN 1 ELSE 0 END) AS issue_items
-            FROM projects p
-            LEFT JOIN materials m ON m.project_id = p.id
-            GROUP BY p.id
-            ORDER BY p.created_at DESC
-            """
-        ).fetchall()
+    try:
+        client = sb()
+        projects = client.select("projects", {"select": "*", "order": "created_at.desc"})
+        materials = client.select("materials", {"select": "project_id,is_ordered"})
+        counts: Dict[int, Dict[str, int]] = {}
+        for m in materials:
+            pid = int(m.get("project_id"))
+            counts.setdefault(pid, {"total": 0, "done": 0, "issue": 0})
+            counts[pid]["total"] += 1
+            if m.get("is_ordered"):
+                counts[pid]["done"] += 1
+            else:
+                counts[pid]["issue"] += 1
+        for p in projects:
+            c = counts.get(int(p["id"]), {"total": 0, "done": 0, "issue": 0})
+            p["total_items"] = c["total"]
+            p["done_items"] = c["done"]
+            p["issue_items"] = c["issue"]
+    except Exception as exc:
+        flash(str(exc), "error")
+        projects = []
     return render_template("index.html", projects=projects)
 
 
@@ -234,152 +272,190 @@ def create_project():
     if not name:
         flash("Vui lòng nhập tên dự án.", "error")
         return redirect(url_for("index"))
+    folder_name = code or name
     try:
-        with db() as conn:
-            conn.execute(
-                "INSERT INTO projects(name, code, description, created_at) VALUES (?, ?, ?, ?)",
-                (name, code, description, datetime.now().isoformat(timespec="seconds")),
-            )
-        flash("Đã tạo dự án.", "success")
-    except sqlite3.IntegrityError:
-        flash("Tên dự án đã tồn tại.", "error")
+        folder_id, folder_url = create_drive_folder(folder_name)
+        sb().insert(
+            "projects",
+            {
+                "name": name,
+                "code": code,
+                "description": description,
+                "drive_folder_id": folder_id,
+                "drive_folder_url": folder_url,
+            },
+        )
+        flash("Đã tạo dự án và tự tạo thư mục trên Google Drive.", "success")
+    except Exception as exc:
+        flash(f"Không tạo được dự án: {exc}", "error")
     return redirect(url_for("index"))
 
 
 @app.route("/project/<int:project_id>")
 def project_detail(project_id: int):
     status = request.args.get("status", "")
-    keyword = request.args.get("q", "").strip()
-    with db() as conn:
-        project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-        if not project:
+    keyword = request.args.get("q", "").strip().lower()
+    try:
+        client = sb()
+        projects = client.select("projects", {"select": "*", "id": f"eq.{project_id}", "limit": "1"})
+        if not projects:
             flash("Không tìm thấy dự án.", "error")
             return redirect(url_for("index"))
-
-        query = "SELECT * FROM materials WHERE project_id=?"
-        params: List[Any] = [project_id]
-        if status:
-            query += " AND status=?"
-            params.append(status)
+        project = projects[0]
+        params = {"select": "*", "project_id": f"eq.{project_id}", "order": "id.desc"}
+        if status == "Đã đặt hàng":
+            params["is_ordered"] = "eq.true"
+        elif status == "Chưa đặt hàng":
+            params["is_ordered"] = "eq.false"
+        materials = client.select("materials", params)
+        # Chuẩn hóa tên field cho template cũ.
+        for m in materials:
+            m["item_code"] = m.get("material_code") or ""
+            m["item_name"] = m.get("material_name") or ""
+            m["status"] = "Đã đặt hàng" if m.get("is_ordered") else "Chưa đặt hàng"
         if keyword:
-            query += " AND (item_name LIKE ? OR item_code LIKE ? OR specification LIKE ? OR po_no LIKE ? OR supplier LIKE ?)"
-            like = f"%{keyword}%"
-            params.extend([like, like, like, like, like])
-        query += " ORDER BY id DESC"
-        materials = conn.execute(query, params).fetchall()
-        files = conn.execute("SELECT * FROM files WHERE project_id=? ORDER BY uploaded_at DESC", (project_id,)).fetchall()
-        stats = conn.execute(
-            "SELECT status, COUNT(*) AS count FROM materials WHERE project_id=? GROUP BY status",
-            (project_id,),
-        ).fetchall()
-    return render_template("project.html", project=project, materials=materials, files=files, stats=stats, status=status, keyword=keyword)
+            def hit(m: Dict[str, Any]) -> bool:
+                hay = " ".join(str(m.get(k, "")) for k in [
+                    "material_name", "material_code", "specification", "po_no", "supplier", "note"
+                ]).lower()
+                return keyword in hay
+            materials = [m for m in materials if hit(m)]
+        files = client.select("excel_files", {"select": "*", "project_id": f"eq.{project_id}", "order": "uploaded_at.desc"})
+        for f in files:
+            f["original_name"] = f.get("file_name") or ""
+            f["row_count"] = f.get("row_count") or 0
+        ordered_count = sum(1 for m in materials if m.get("is_ordered"))
+        not_ordered_count = len(materials) - ordered_count
+        stats = [
+            {"status": "Chưa đặt hàng", "count": not_ordered_count},
+            {"status": "Đã đặt hàng", "count": ordered_count},
+        ]
+    except Exception as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("index"))
+    return render_template(
+        "project.html", project=project, materials=materials, files=files,
+        stats=stats, status=status, keyword=keyword
+    )
 
 
 @app.route("/project/<int:project_id>/upload", methods=["POST"])
 def upload_excel(project_id: int):
-    file = request.files.get("excel_file")
-    if not file or not file.filename:
+    uploaded = request.files.get("excel_file")
+    if not uploaded or not uploaded.filename:
         flash("Vui lòng chọn file Excel.", "error")
         return redirect(url_for("project_detail", project_id=project_id))
-    if not allowed_file(file.filename):
+    if not allowed_file(uploaded.filename):
         flash("Chỉ hỗ trợ file .xlsx hoặc .xlsm.", "error")
         return redirect(url_for("project_detail", project_id=project_id))
 
-    project_folder = UPLOAD_DIR / str(project_id)
-    project_folder.mkdir(parents=True, exist_ok=True)
-    original_name = secure_filename(file.filename)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stored_name = f"{timestamp}_{original_name}"
-    stored_path = project_folder / stored_name
-    file.save(stored_path)
-
     try:
-        rows = parse_excel(stored_path)
-    except Exception as exc:
-        flash(f"Không đọc được file Excel: {exc}", "error")
-        return redirect(url_for("project_detail", project_id=project_id))
+        client = sb()
+        projects = client.select("projects", {"select": "*", "id": f"eq.{project_id}", "limit": "1"})
+        if not projects:
+            flash("Không tìm thấy dự án.", "error")
+            return redirect(url_for("index"))
+        project = projects[0]
+        folder_id = project.get("drive_folder_id")
+        if not folder_id:
+            raise RuntimeError("Dự án này chưa có drive_folder_id. Hãy tạo lại dự án hoặc cập nhật folder ID.")
 
-    with db() as conn:
-        cur = conn.execute(
-            "INSERT INTO files(project_id, original_name, stored_name, uploaded_at, row_count) VALUES (?, ?, ?, ?, ?)",
-            (project_id, file.filename, stored_name, datetime.now().isoformat(timespec="seconds"), len(rows)),
-        )
-        file_id = cur.lastrowid
+        file_bytes = uploaded.read()
+        original_name = secure_filename(uploaded.filename) or "upload.xlsx"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        drive_name = f"{timestamp}_{original_name}"
+
+        with tempfile.NamedTemporaryFile(suffix=Path(original_name).suffix, delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = Path(tmp.name)
+        try:
+            rows = parse_excel(tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        drive_file_id, drive_file_url = upload_to_drive(file_bytes, drive_name, folder_id)
+        inserted_file = client.insert(
+            "excel_files",
+            {
+                "project_id": project_id,
+                "file_name": uploaded.filename,
+                "drive_file_id": drive_file_id,
+                "drive_file_url": drive_file_url,
+                "row_count": len(rows),
+            },
+        )[0]
+        file_id = inserted_file["id"]
+        payload = []
         for item in rows:
-            conn.execute(
-                """
-                INSERT INTO materials(
-                    project_id, file_id, sheet_name, excel_row, item_code, item_name, specification,
-                    unit, quantity, supplier, po_no, request_date, required_date, status,
-                    location, responsible, actual_date, note, extra_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    project_id,
-                    file_id,
-                    item.get("sheet_name"),
-                    item.get("excel_row"),
-                    item.get("item_code", ""),
-                    item.get("item_name", ""),
-                    item.get("specification", ""),
-                    item.get("unit", ""),
-                    item.get("quantity", ""),
-                    item.get("supplier", ""),
-                    item.get("po_no", ""),
-                    item.get("request_date", ""),
-                    item.get("required_date", ""),
-                    "Chưa đặt hàng",
-                    "",
-                    "",
-                    "",
-                    item.get("note", ""),
-                    json.dumps(item.get("extra_json", {}), ensure_ascii=False),
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
+            payload.append(
+                {
+                    "project_id": project_id,
+                    "excel_file_id": file_id,
+                    "sheet_name": item.get("sheet_name"),
+                    "excel_row": item.get("excel_row"),
+                    "material_code": item.get("item_code", ""),
+                    "material_name": item.get("item_name", ""),
+                    "specification": item.get("specification", ""),
+                    "unit": item.get("unit", ""),
+                    "quantity": item.get("quantity", ""),
+                    "supplier": item.get("supplier", ""),
+                    "po_no": item.get("po_no", ""),
+                    "request_date": item.get("request_date", ""),
+                    "required_date": item.get("required_date", ""),
+                    "note": item.get("note", ""),
+                    "is_ordered": False,
+                    "extra_json": item.get("extra_json", {}),
+                    "updated_at": now_text(),
+                }
             )
-    flash(f"Đã upload và import {len(rows)} dòng vật tư.", "success")
+        # Supabase REST giới hạn payload quá lớn, chia nhỏ mỗi 500 dòng.
+        for start in range(0, len(payload), 500):
+            client.insert("materials", payload[start : start + 500])
+        flash(f"Đã upload lên Google Drive và import {len(rows)} dòng vật tư.", "success")
+    except Exception as exc:
+        flash(f"Không upload/import được Excel: {exc}", "error")
     return redirect(url_for("project_detail", project_id=project_id))
 
 
 @app.route("/material/<int:material_id>/update", methods=["POST"])
 def update_material(material_id: int):
     status = request.form.get("status", "Chưa đặt hàng")
-    if status not in STATUS_OPTIONS:
-        status = "Chưa đặt hàng"
+    is_ordered = status == "Đã đặt hàng"
     fields = {
-        "status": status,
+        "is_ordered": is_ordered,
         "location": request.form.get("location", "").strip(),
         "responsible": request.form.get("responsible", "").strip(),
         "actual_date": request.form.get("actual_date", "").strip(),
         "note": request.form.get("note", "").strip(),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": now_text(),
     }
-    with db() as conn:
-        material = conn.execute("SELECT project_id FROM materials WHERE id=?", (material_id,)).fetchone()
-        if not material:
+    try:
+        client = sb()
+        rows = client.select("materials", {"select": "project_id", "id": f"eq.{material_id}", "limit": "1"})
+        if not rows:
             flash("Không tìm thấy vật tư.", "error")
             return redirect(url_for("index"))
-        conn.execute(
-            """
-            UPDATE materials
-            SET status=:status, location=:location, responsible=:responsible,
-                actual_date=:actual_date, note=:note, updated_at=:updated_at
-            WHERE id=:id
-            """,
-            {**fields, "id": material_id},
-        )
-    flash("Đã cập nhật tình trạng vật tư.", "success")
-    return redirect(url_for("project_detail", project_id=material["project_id"]))
+        project_id = rows[0]["project_id"]
+        client.update("materials", fields, {"id": f"eq.{material_id}"})
+        flash("Đã cập nhật tình trạng vật tư.", "success")
+        return redirect(url_for("project_detail", project_id=project_id))
+    except Exception as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("index"))
 
 
 @app.route("/project/<int:project_id>/export.csv")
 def export_csv(project_id: int):
-    with db() as conn:
-        project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-        materials = conn.execute("SELECT * FROM materials WHERE project_id=? ORDER BY id", (project_id,)).fetchall()
-    if not project:
+    try:
+        client = sb()
+        projects = client.select("projects", {"select": "*", "id": f"eq.{project_id}", "limit": "1"})
+        if not projects:
+            return redirect(url_for("index"))
+        project = projects[0]
+        materials = client.select("materials", {"select": "*", "project_id": f"eq.{project_id}", "order": "id.asc"})
+    except Exception as exc:
+        flash(str(exc), "error")
         return redirect(url_for("index"))
-
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -388,10 +464,13 @@ def export_csv(project_id: int):
     ])
     for m in materials:
         writer.writerow([
-            m["item_code"], m["item_name"], m["specification"], m["unit"], m["quantity"], m["supplier"], m["po_no"],
-            m["request_date"], m["required_date"], m["status"], m["location"], m["responsible"], m["actual_date"], m["note"]
+            m.get("material_code", ""), m.get("material_name", ""), m.get("specification", ""),
+            m.get("unit", ""), m.get("quantity", ""), m.get("supplier", ""), m.get("po_no", ""),
+            m.get("request_date", ""), m.get("required_date", ""),
+            "Đã đặt hàng" if m.get("is_ordered") else "Chưa đặt hàng",
+            m.get("location", ""), m.get("responsible", ""), m.get("actual_date", ""), m.get("note", "")
         ])
-    filename = f"{secure_filename(project['name'])}_materials.csv"
+    filename = f"{secure_filename(project.get('name') or 'materials')}_materials.csv"
     return Response(
         output.getvalue().encode("utf-8-sig"),
         mimetype="text/csv",
@@ -401,15 +480,13 @@ def export_csv(project_id: int):
 
 @app.route("/project/<int:project_id>/delete", methods=["POST"])
 def delete_project(project_id: int):
-    with db() as conn:
-        conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
-    flash("Đã xóa dự án và dữ liệu liên quan.", "success")
+    try:
+        sb().delete("projects", {"id": f"eq.{project_id}"})
+        flash("Đã xóa dự án và dữ liệu liên quan trong Supabase. Thư mục Google Drive không tự xóa để tránh mất file gốc.", "success")
+    except Exception as exc:
+        flash(str(exc), "error")
     return redirect(url_for("index"))
 
-
-# Khởi tạo database khi app được import bởi Gunicorn/Render.
-# Nếu không có dòng này, Render sẽ chạy được web nhưng chưa tạo bảng projects/materials.
-init_db()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
