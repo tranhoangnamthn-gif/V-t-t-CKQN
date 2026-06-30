@@ -406,8 +406,11 @@ def delete_project(project_id: int):
     return redirect(url_for("index"))
 
 
+# Khởi tạo database khi app được import bởi Gunicorn/Render.
+# Nếu không có dòng này, Render sẽ chạy được web nhưng chưa tạo bảng projects/materials.
+init_db()
+
 if __name__ == "__main__":
-    init_db()
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)
